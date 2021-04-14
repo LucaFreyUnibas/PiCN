@@ -9,12 +9,13 @@ from PiCN.Processes import LayerProcess
 from PiCN.Layers.ICNLayer.ForwardingInformationBase import BaseForwardingInformationBase, ForwardingInformationBaseEntry
 from PiCN.Layers.RoutingLayer.RoutingInformationBase import BaseRoutingInformationBase
 from PiCN.Layers.ICNLayer.PendingInterestTable import BasePendingInterestTable
+from PiCN.Layers.SynchronisationLayer.BloomFilters.InvertibleBloomFilter import InvertibleBloomFilter
 
 #Chatdictionary hier
-#sync interest loop
 class SynchronisationMessageDict(object):
     def __init__(self, pit: BasePendingInterestTable=None, fib=BaseForwardingInformationBase):
         self.container: Dict[Name, SynchronisationMessageDict.SynchronisationMessageDictEntry] = {}
+        self.ibf = InvertibleBloomFilter(100)
         #self.pit = pit
         #self.fib = fib
     class SynchronisationMessageDictEntry(object):
@@ -79,15 +80,23 @@ class BasicSynchronisationLayer(LayerProcess):
     #Requests
         self.message_dict = message_dict
         self.loop_interval = 2
-    def new_messages_loop(self, to_lower: multiprocessing.Queue, peer):
-        last_msg_id = self.message_dict.get_entry(peer).last_msg_id
-        interest: Interest = Interest("/message_sync/" + peer + "/" + last_msg_id)
-        self.queue_to_lower.put(interest)
+    #meesage sync loop, ask other client for its IBF
+    def new_messages_loop(self, fid):
+        # last_msg_id = self.message_dict.get_entry(peer).last_msg_id
+        # interest: Interest = Interest("/message_sync/" + peer + "/" + last_msg_id)
 
-        timestamp = time.time()
-        t = threading.Timer(self.loop_interval, self.new_messages_loop)
+        #timestamp = time.time()
+        try:
+            interest: Interest = Interest(Name("/data/message_sync"))
+            self.queue_to_lower.put([fid, interest])
+        except Exception as e:
+            print(e)
+            self.logger.warning("Exception during Sync Loop")
+            return
+        t = threading.Timer(self.loop_interval, self.new_messages_loop, args=[fid])
+        t.setDaemon(True)
         t.start()
-
+    #data from higer is always a new message from the Chatclient whichh must be put into the dict
     def data_from_higher(self, to_lower: multiprocessing.Queue, to_higher: multiprocessing.Queue, data):
         print(str(data[1].content))
         packet_id = data[0] #was face_id
@@ -96,26 +105,32 @@ class BasicSynchronisationLayer(LayerProcess):
             self.handle_interest_from_higher(packet_id, packet) #was face_id
             return
         if isinstance(packet, Content):
+            print(str(data[1].content))
+            # todo save msg to log(calss with seqnum,msg and ibf) , packet.content
             if self.message_dict.get_entry(packet.name) is None:
                 self.message_dict.create_entry(packet_id=packet_id, chat_id=packet.name)
-            #to_lower.put([face_id, packet])
+            to_lower.put([packet_id, packet])
             return
         if isinstance(packet, Nack):
             return
-    #PSync direkt wenn neue Daten in queue packen
+    #PSync data arrives from lower therefore its communication with the other client
     def data_from_lower(self, to_lower: multiprocessing.Queue, to_higher: multiprocessing.Queue, data):
         face_id = data[0]
         packet = data[1]
+        #Interests are either Sync Interests or asking for a specific data name
         if isinstance(packet, Interest):
             self.handle_interest_from_lower(face_id, packet)
+
             return
+        #either the latest IBF from our chatpartner or new data names
         if isinstance(packet, Content):
+            print("this is content:", packet.content)
             self.message_dict.add_entry(Content.content.split("/")[0], Content.content.split("/")[1])
             Chatclient.receive_message()
             return
         if isinstance(packet, Nack):
             return
-
+    #probably not necessary
     def handle_interest_from_higher(self, face_id: int, interest: Interest, to_lower: multiprocessing.Queue,
                                     to_higher: multiprocessing.Queue):
 
@@ -123,11 +138,11 @@ class BasicSynchronisationLayer(LayerProcess):
 
     def handle_interest_from_lower(self, face_id: int, interest: Interest, to_lower: multiprocessing.Queue,
                                    to_higher: multiprocessing.Queue, from_local: bool = False):
-        if self.message_dictg.get_entry(interest.name) is not None:
+        if self.message_dict.get_entry(interest.name) is not None:
             if self.message_dict.get_entry(interest.name).last_msg_id < interest.name.split("/", 1):
                 message_from = self.message_dict(interest.name)
                 content: Content = Content(message_from, self.message_dict(interest.name))
-                self.queue_to_lower.put
+                to_lower.put[face_id, content]
         return
 
     def ageing(self):

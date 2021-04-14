@@ -14,6 +14,7 @@ from PiCN.Layers.PacketEncodingLayer.Encoder import SimpleStringEncoder
 from PiCN.Layers.PacketEncodingLayer.Encoder import BasicEncoder
 from PiCN.Packets import Content, Name, Interest, Nack
 from PiCN.Layers.TimeoutPreventionLayer import BasicTimeoutPreventionLayer, TimeoutPreventionMessageDict
+from PiCN.ProgramLibs.Chat import ChatGUI
 
 
 class Chat(object):
@@ -46,6 +47,7 @@ class Chatclient(object):
         faceidtable = synced_data_struct_factory.manager.faceidtable()
         # timeoutprevention_dict = synced_data_struct_factory.manager.timeoutprevention_dict()
         sync_dict = synced_data_struct_factory.manager.sync_dict()
+        self.GUI = ChatGUI(self)
 
         if interfaces is None:
             interfaces = [UDP4Interface(0)]
@@ -73,6 +75,9 @@ class Chatclient(object):
             self.fid = self.linklayer.faceidtable.get_or_create_faceid(AddressInfo(ip, 0))
         else:
             self.fid = self.linklayer.faceidtable.get_or_create_faceid(AddressInfo((ip, port), 0))
+        self.synchronisationLayer.new_messages_loop(self.fid)
+
+        #todo make log stuff with ibf
 
         # send packet
         self.lstack.start_all()
@@ -84,6 +89,9 @@ class Chatclient(object):
         :param timeout Timeout to wait for a response. Use 0 for infinity
         """
         self.chat_dict[peer] = Chat(peer)
+        #start a chat GUI
+        #TODO ModuleNotFoundError: No module named 'tkinter' only works with Python 3.9
+        #self.GUI = ChatGUI.ChatGUI(self, self.peer)
         # create interest
         interest: Interest = Interest(name)
 
@@ -105,15 +113,23 @@ class Chatclient(object):
             return "Received Nack: " + str(packet.reason.value)
         return None
     #aus nachricht interest und in queue_to_lower (to sync layer)
-    def send_message(self, peer, text):
-        content: Content = Content(peer, text)
+    def send_message(self, name, text):
+        content: Content = Content(name, text)
         #interest: Interest = Interest(peer)
-        self.lstack.queue_from_higher.put([None, content])
+        if self.autoconfig:
+            self.lstack.queue_from_higher.put([None, content])
+        else:
+            # while True:
+            self.lstack.queue_from_higher.put([self.fid, content])
+        #self.lstack.queue_from_higher.put([None, content])
 
         return
-
+    #not necessary as for shared log?
     def receive_message(self):
         return
+
+    def get_log(self):
+        return self.chat_dict
 
     def stop_chat(self):
         """Close everything"""
